@@ -2,23 +2,11 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import pandas as pd
 import webbrowser
+import requests
+import hashlib
+import os
 import platform
 import uuid
-
-
-# -------------------------
-# "SERVER" SIMULATION
-# -------------------------
-
-SERVER = {
-    "latest_version": "1.1",
-    "dev_message": "Welcome developer. System running normally.",
-    "force_update": False
-}
-
-
-def get_device_id():
-    return f"{uuid.getnode()}-{platform.node()}"
 
 
 class AuditApp(tk.Tk):
@@ -28,47 +16,70 @@ class AuditApp(tk.Tk):
         self.title("Audit Program")
         self.geometry("800x500")
 
-        self.version = "1.0"
-        self.device_id = get_device_id()
-
         self.data = {}
+
+        # -------------------------
+        # VERSION + UPDATE SYSTEM
+        # -------------------------
+        self.version = "1.0"
+
+        self.GITHUB_URL = "https://raw.githubusercontent.com/indx2ra-beep/cpaprogram/main/README.md"
+        self.LOCAL_HASH_FILE = "github_hash.txt"
+
+        self.device_id = f"{uuid.getnode()}-{platform.node()}"
 
         self.create_widgets()
 
-        self.after(1000, self.startup_checks)
+        # run update check after UI loads (non-blocking)
+        self.after(1000, self.check_github_update)
 
     # -------------------------
-    # STARTUP CHECKS
+    # GITHUB UPDATE SYSTEM
     # -------------------------
 
-    def startup_checks(self):
-        self.check_updates()
-        self.check_dev_message()
+    def get_remote_hash(self):
+        try:
+            r = requests.get(self.GITHUB_URL, timeout=5)
+            r.raise_for_status()
+            return hashlib.sha256(r.text.encode()).hexdigest()
+        except:
+            return None
 
-    def is_developer(self):
-        # Replace this with YOUR real device ID after printing it once
-        DEVICES = [
-            "123456789-your-device-name"
-        ]
-        return self.device_id in DEVICES
+    def get_local_hash(self):
+        if not os.path.exists(self.LOCAL_HASH_FILE):
+            return None
+        with open(self.LOCAL_HASH_FILE, "r") as f:
+            return f.read().strip()
 
-    def check_updates(self):
-        latest = SERVER["latest_version"]
+    def save_local_hash(self, value):
+        with open(self.LOCAL_HASH_FILE, "w") as f:
+            f.write(value)
 
-        if latest != self.version:
-            msg = f"Update available: v{latest}\nCurrent version: v{self.version}"
+    def check_github_update(self):
+        remote_hash = self.get_remote_hash()
+        local_hash = self.get_local_hash()
 
-            if SERVER["force_update"]:
-                messagebox.showwarning("Update Required", msg)
-            else:
-                messagebox.showinfo("Update Available", msg)
+        if not remote_hash:
+            return
 
-    def check_dev_message(self):
-        if self.is_developer():
-            msg = SERVER.get("dev_message")
-            if msg:
-                messagebox.showinfo("Developer Message", msg)
+        # first run setup
+        if local_hash is None:
+            self.save_local_hash(remote_hash)
+            return
 
+        if remote_hash != local_hash:
+            self.prompt_update()
+            self.save_local_hash(remote_hash)
+
+    def prompt_update(self):
+        messagebox.showinfo(
+            "Update Available",
+            "The application has been updated on GitHub (README.md changed)."
+        )
+
+    def contact_developer(self):
+        webbrowser.open_new_tab("mailto:indx.2ra@gmail.com")
+        
     # -------------------------
     # UI
     # -------------------------
@@ -77,17 +88,16 @@ class AuditApp(tk.Tk):
         top = ttk.Frame(self)
         top.pack(fill="x", pady=10)
 
-        ttk.Button(top, text="Load 401(k)", command=self.load_401k).pack(side="left", padx=5)
+        ttk.Button(top, text="Load 401(k) PDF", command=self.load_401k).pack(side="left", padx=5)
         ttk.Button(top, text="Load Payroll YTD", command=self.load_payroll_ytd).pack(side="left", padx=5)
-        ttk.Button(top, text="Load Weekly", command=self.load_weekly).pack(side="left", padx=5)
+        ttk.Button(top, text="Load Weekly Payroll", command=self.load_weekly).pack(side="left", padx=5)
         ttk.Button(top, text="Load TEST DATA", command=self.load_test_data).pack(side="left", padx=5)
-        ttk.Button(top, text="Export CSV", command=self.export_csv).pack(side="left", padx=5)
+        ttk.Button(top, text="Export Excel", command=self.export_excel).pack(side="left", padx=5)
         ttk.Button(top, text="Clear", command=self.clear_data).pack(side="left", padx=5)
+        ttk.Button(top, text="Contact Developer", command=self.contact_developer).pack(side="left", padx=5)
 
-        ttk.Label(self, text=f"Device ID: {self.device_id}").pack()
-
-        self.status = ttk.Label(self, text="Ready")
-        self.status.pack()
+        self.status = ttk.Label(self, text=f"Ready | Device: {self.device_id}")
+        self.status.pack(pady=5)
 
         preview = ttk.Label(
             self,
@@ -101,14 +111,17 @@ class AuditApp(tk.Tk):
         ))
 
         self.tree = ttk.Treeview(self, show="headings")
-        self.tree.pack(fill="both", expand=True)
+        self.tree.pack(fill="both", expand=True, padx=10, pady=10)
 
     # -------------------------
     # DATA MODEL
     # -------------------------
 
+    def normalize(self, name):
+        return str(name).strip().lower()
+
     def get_row(self, name):
-        name = str(name).strip().lower()
+        name = self.normalize(name)
 
         if name not in self.data:
             self.data[name] = {
@@ -122,6 +135,43 @@ class AuditApp(tk.Tk):
             }
 
         return self.data[name]
+
+    # -------------------------
+    # LOADERS
+    # -------------------------
+
+    def load_401k(self):
+        file = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
+        if file:
+            for row in self.parse_401k(file):
+                r = self.get_row(row["Employee Name"])
+                r["401k Employee Contributions"] = row.get("401k Employee Contributions", 0)
+                r["401k Employer Contributions"] = row.get("401k Employer Contributions", 0)
+
+            self.refresh_table()
+            self.status.config(text="Loaded 401(k)")
+
+    def load_payroll_ytd(self):
+        file = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
+        if file:
+            for row in self.parse_payroll_ytd(file):
+                r = self.get_row(row["Employee Name"])
+                r["Payroll Employee Contributions YTD"] = row.get("Payroll Employee Contributions YTD", 0)
+                r["Payroll Wages YTD"] = row.get("Payroll Wages YTD", 0)
+
+            self.refresh_table()
+            self.status.config(text="Loaded Payroll YTD")
+
+    def load_weekly(self):
+        file = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
+        if file:
+            for row in self.parse_weekly(file):
+                r = self.get_row(row["Employee Name"])
+                r["Weekly Employee Contributions"] += row.get("Weekly Employee Contributions", 0)
+                r["Weekly Wages"] += row.get("Weekly Wages", 0)
+
+            self.refresh_table()
+            self.status.config(text="Loaded Weekly Payroll")
 
     # -------------------------
     # TEST DATA
@@ -142,36 +192,39 @@ class AuditApp(tk.Tk):
             r["Weekly Employee Contributions"] += wc
             r["Weekly Wages"] += ww
 
-        self.refresh()
-        self.status.config(text="Test data loaded")
+        self.refresh_table()
+        self.status.config(text="Loaded TEST DATA")
 
     # -------------------------
-    # PLACEHOLDER LOADERS
+    # PLACEHOLDERS
     # -------------------------
 
-    def load_401k(self):
-        self.status.config(text="401(k) loader not implemented yet")
+    def parse_401k(self, file):
+        return []
 
-    def load_payroll_ytd(self):
-        self.status.config(text="Payroll loader not implemented yet")
+    def parse_payroll_ytd(self, file):
+        return []
 
-    def load_weekly(self):
-        self.status.config(text="Weekly loader not implemented yet")
+    def parse_weekly(self, file):
+        return []
 
     # -------------------------
     # TABLE
     # -------------------------
 
-    def refresh(self):
+    def refresh_table(self):
         self.tree.delete(*self.tree.get_children())
 
         df = pd.DataFrame(self.data.values())
+
+        if df.empty:
+            return
 
         self.tree["columns"] = list(df.columns)
 
         for col in df.columns:
             self.tree.heading(col, text=col)
-            self.tree.column(col, width=140)
+            self.tree.column(col, width=150)
 
         for _, row in df.iterrows():
             self.tree.insert("", "end", values=list(row))
@@ -180,20 +233,24 @@ class AuditApp(tk.Tk):
     # EXPORT
     # -------------------------
 
-    def export_csv(self):
+    def export_excel(self):
         if not self.data:
-            messagebox.showwarning("No data", "No data to export")
+            messagebox.showwarning("No data", "Nothing to export")
             return
 
-        file = filedialog.asksaveasfilename(defaultextension=".csv")
+        file = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")]
+        )
 
         if file:
-            pd.DataFrame(self.data.values()).to_csv(file, index=False)
-            messagebox.showinfo("Success", "Export complete")
+            df = pd.DataFrame(self.data.values())
+            df.to_excel(file, index=False, engine="openpyxl")
+            messagebox.showinfo("Success", "Excel export complete")
 
     def clear_data(self):
         self.data = {}
-        self.refresh()
+        self.refresh_table()
         self.status.config(text="Cleared")
 
 
